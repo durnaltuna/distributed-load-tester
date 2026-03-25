@@ -1,0 +1,83 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg15
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: loadtest
+    ports:
+      - "5433:5432"
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d loadtest"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus-custom/prometheus.yml
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus:/etc/prometheus-custom
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: apps/orchestrator/Dockerfile
+    restart: unless-stopped
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      PORT: "3000"
+    ports:
+      - "3000:3000"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    restart: unless-stopped
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      WORKER_ID: worker-1
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  redis_data:
+  timescale_data:
+  grafana_data:
