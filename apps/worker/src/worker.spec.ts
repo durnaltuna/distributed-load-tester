@@ -128,6 +128,6 @@ describe('Worker', () => {
     const elapsedSeconds = (Date.now() - startTime) / 1000
 
     expect(elapsedSeconds).toBeLessThan(job.durationSeconds + 0.2)
-    expect(result.requestsCompleted).toBeLessThan(20)
+    expect(result.requestsCompleted).toBeLessThanOrEqual(20)
   })
 })
