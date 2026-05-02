@@ -1,0 +1,113 @@
+Project Summary — Distributed Load Testing Engine
+What it is: A tool that automatically discovers the breaking point of any HTTP endpoint by firing distributed load across multiple worker nodes, adapting its concurrency in real-time based on how the target responds.
+The core differentiator: Unlike fixed-load testers, the adaptive algorithm automatically ramps concurrency up and down based on p99 latency and error rate, finding the exact concurrency level where a system breaks.
+
+Architecture
+User → Orchestrator (Fastify REST API)
+              ↓
+         Redis Streams ("jobs" queue)
+              ↓
+    Workers (N parallel Node processes)
+         fire HTTP requests at target
+              ↓
+         Redis Streams ("metrics" queue)
+              ↓
+         Orchestrator collects metrics
+         runs adaptive algorithm every 5s
+              ↓
+         WebSocket → Dashboard (React)
+         TimescaleDB → persistent storage
+         Prometheus + Grafana → observability
+
+Tech Stack
+
+Language: TypeScript everywhere
+API Framework: Fastify
+Queue: Redis Streams
+Metrics DB: TimescaleDB (Postgres extension)
+Observability: Prometheus + Grafana
+Frontend: React + Recharts
+Containers: Docker + Docker Compose
+Orchestration: Kubernetes (k3d locally)
+IaC: Terraform
+CI/CD: GitHub Actions
+Monorepo: Turborepo
+
+
+Folder Structure
+root/
+├── apps/
+│   ├── orchestrator/     # Fastify API, adaptive algorithm, Redis publisher
+│   ├── worker/           # HTTP load generator, Redis consumer
+│   └── dashboard/        # React frontend, WebSocket client, charts
+├── packages/
+│   └── shared/           # Shared TypeScript interfaces only (Job, MetricSnapshot)
+├── infra/
+│   ├── k8s/              # Kubernetes manifests + HPA for workers
+│   ├── terraform/        # Cloud provisioning
+│   └── helm/             # Helm chart
+├── .github/workflows/    # CI (test+build) and CD (deploy) pipelines
+└── docker-compose.yml    # Local Redis, TimescaleDB, Prometheus, Grafana
+
+Key Interfaces (packages/shared)
+typescriptinterface Job {
+  targetUrl: string
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE'
+  concurrency: number
+  durationSeconds: number
+  headers?: Record<string, string>
+  body?: string
+}
+
+interface MetricSnapshot {
+  timestamp: string
+  workerId: string
+  requestsCompleted: number
+  errorsCount: number
+  p50LatencyMs: number
+  p95LatencyMs: number
+  p99LatencyMs: number
+}
+```
+
+---
+
+## The Adaptive Algorithm (orchestrator/src/adaptive.ts)
+
+Runs every 5 seconds after the first 10 snapshots establish a baseline p99:
+```
+errorRate = errorsCount / requestsCompleted
+
+if errorRate > 0.05        → pause, emit "threshold_found"
+if p99 > baseline * 2      → concurrency -= 20%, emit "backing_off"
+if p99 < baseline          → concurrency += 10%, emit "ramping_up"
+if stable for 30s          → concurrency += 10%, emit "ramping_up"
+```
+
+---
+
+## API Routes (orchestrator)
+```
+POST   /tests                → create test, publish Job to Redis, return testId
+GET    /tests/:testId        → return status + all MetricSnapshots so far
+DELETE /tests/:testId        → stop test
+WS     /tests/:testId/live   → stream MetricSnapshots in real-time
+
+What Remains To Be Built
+
+ Docker Compose (Redis, TimescaleDB, Prometheus, Grafana)
+ React dashboard with live WebSocket charts (p50/p95/p99 lines)
+ Kubernetes manifests + HPA for worker autoscaling
+ Terraform for cloud provisioning
+ GitHub Actions CI/CD pipelines
+ Deployed live URL (Railway or Render)
+ README with architecture diagram + demo video
+
+
+Rules The Project Follows
+
+Spec comment first, then tests, then implementation — always
+Tests use Vitest, must all pass before moving to next feature
+Workers never throw on failed HTTP requests — failures are counted not crashed
+Percentiles calculated by sorting latency array and indexing by ratio
+Redis consumer group name is "workers", streams are "jobs" and "metrics"

@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard
+  namespace: load-tester
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dashboard
+  template:
+    metadata:
+      labels:
+        app: dashboard
+    spec:
+      containers:
+        - name: dashboard
+          image: ghcr.io/replace-me/distributed-load-tester-dashboard:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 4173
+          envFrom:
+            - configMapRef:
+                name: load-tester-config
+          readinessProbe:
+            tcpSocket:
+              port: 4173
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 4173
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboard
+  namespace: load-tester
+spec:
+  selector:
+    app: dashboard
+  ports:
+    - name: http
+      port: 4173
+      targetPort: 4173
+      nodePort: 30173
+  type: NodePort

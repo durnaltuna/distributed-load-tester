@@ -20,6 +20,11 @@ interface MetricSnapshot {
   p99LatencyMs: number
 }
 
+interface ParsedJob {
+  testId: string
+  job: Job
+}
+
 /**
  * SPEC: RedisConsumer
  * 
@@ -88,15 +93,10 @@ class RedisConsumer {
     while (this.isRunning) {
       try {
         const messages = await this.client.xReadGroup(
-          {
-            key: 'jobs',
-            group: 'workers',
-            consumer: this.workerId,
-          },
-          {
-            count: 1,
-            block: 5000, // 5 second timeout
-          },
+          'workers',
+          this.workerId,
+          [{ key: 'jobs', id: '>' }],
+          { COUNT: 1, BLOCK: 5000 },
         )
 
         if (!messages || messages.length === 0) {
@@ -109,11 +109,11 @@ class RedisConsumer {
 
           for (const msg of streamMessages) {
             try {
-              const job = this.parseJob(msg.message)
+              const parsedJob = this.parseJob(msg.message)
               const worker = new Worker(this.workerId)
-              const metrics = await worker.run(job)
+              const metrics = await worker.run(parsedJob.job)
 
-              await this.publishMetrics(metrics)
+              await this.publishMetrics(parsedJob.testId, metrics)
               await this.client.xAck('jobs', 'workers', msg.id)
             } catch (error) {
               console.error('Error processing job:', error)
@@ -131,20 +131,27 @@ class RedisConsumer {
     }
   }
 
-  private parseJob(message: Record<string, string>): Job {
+  private parseJob(message: Record<string, string>): ParsedJob {
+    const testId = message.testId || ''
+    const body = message.body ? JSON.parse(message.body) : undefined
+
     return {
-      targetUrl: message.targetUrl || '',
-      method: (message.method as any) || 'GET',
-      concurrency: parseInt(message.concurrency || '1', 10),
-      durationSeconds: parseInt(message.durationSeconds || '1', 10),
-      headers: message.headers ? JSON.parse(message.headers) : undefined,
-      body: message.body ? JSON.parse(message.body) : undefined,
+      testId,
+      job: {
+        targetUrl: message.targetUrl || '',
+        method: (message.method as any) || 'GET',
+        concurrency: parseInt(message.concurrency || '1', 10),
+        durationSeconds: parseInt(message.durationSeconds || '1', 10),
+        headers: message.headers ? JSON.parse(message.headers) : undefined,
+        body,
+      },
     }
   }
 
-  private async publishMetrics(metrics: MetricSnapshot): Promise<void> {
+  private async publishMetrics(testId: string, metrics: MetricSnapshot): Promise<void> {
     try {
       await this.client.xAdd('metrics', '*', {
+        testId,
         timestamp: metrics.timestamp,
         workerId: metrics.workerId,
         requestsCompleted: metrics.requestsCompleted.toString(),

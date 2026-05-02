@@ -1,70 +1,69 @@
 # Project Status Checkpoint
 
-Date: 2026-03-25
+Date: 2026-03-28
 
 ## Summary
 
-Current backend foundations exist and tests are green, but the project is not yet deployment-ready.
+Core backend and local container stack are operational, and the dashboard now exists and is wired into the runtime path. The project is usable locally for interactive load tests, but still needs deeper end-to-end automation and production infrastructure completion.
 
 ## Completed
 
 - Orchestrator core exists:
-  - API server and routes implemented.
+  - Fastify API routes implemented (`POST /tests`, `GET /tests/:testId`, `DELETE /tests/:testId`).
+  - WebSocket live stream route implemented (`/tests/:testId/live`).
   - Adaptive concurrency controller implemented.
-  - Redis stream consumption + websocket broadcasting path implemented.
+  - Metrics ingestion loop from Redis stream implemented.
+  - CORS enabled for browser clients.
 - Worker core exists:
+  - Redis consumer group flow (`jobs` stream / `workers` group) implemented.
   - HTTP load execution loop implemented.
-  - Redis consumer implemented for jobs -> metrics.
+  - Worker metrics publication implemented.
+  - `testId` is now propagated from job payload to metrics stream entries.
 - Shared contracts exist:
-  - `Job` and `MetricSnapshot` interfaces implemented.
-- Unit tests currently pass for all packages with test scripts.
-- Integration path coverage now includes orchestrator job enqueue -> Redis stream via route test.
-- Build artifact strategy now writes outputs to `dist` and keeps source directories source-only.
+  - Shared TypeScript interfaces implemented in `packages/shared`.
+- Dashboard implementation added:
+  - React + Vite app scaffolded in `apps/dashboard`.
+  - Test creation form connected to orchestrator.
+  - WebSocket + polling metric updates implemented.
+  - Live p50/p95/p99 chart implemented with Recharts.
+- Docker baseline extended:
+  - Dashboard Dockerfile added.
+  - Dashboard service added to `docker-compose.yml`.
+  - Compose now defines Redis, TimescaleDB, Prometheus, Grafana, Orchestrator, Worker, Dashboard.
+- Tests and build status:
+  - `worker` tests passing, including new consumer internals coverage.
+  - `orchestrator` tests passing.
+  - `dashboard` build passing.
+  - root `npm run build` passing via turbo.
 
 ## Partially Complete / Needs Hardening
 
-- Build pipeline baseline is now healthy:
-  - `npm run build` succeeds in orchestrator/worker/shared after scoping package tsconfig includes/excludes.
-- Test coverage is still partial:
-  - Worker execution logic has tests.
-  - Orchestrator has tests for controller and API internals.
-  - Consumer loop and end-to-end flow (orchestrator <-> redis <-> worker) are not covered by integration tests.
-- Runtime startup baseline is improved:
-  - Worker now has `src/index.ts` entrypoint.
-  - Shared now has `src/index.ts` barrel entrypoint.
-  - Workspace now includes `ts-node` for dev scripts.
-- Local runtime still depends on Redis availability:
-  - Orchestrator and worker `npm run dev` will fail without Redis at `REDIS_HOST`/`REDIS_PORT`.
-- Source artifact hygiene improved:
-  - Generated JS/declaration artifacts were removed from package `src` directories.
-  - Package builds emit into `dist`.
+- Integration confidence is improved, but full runtime validation is still shallow:
+  - No full automated test currently spans orchestrator -> Redis -> worker -> Redis -> orchestrator ingestion loop.
+- Dashboard usability baseline exists, but UX/feature depth is limited:
+  - Single-run workflow implemented.
+  - No historical run browser or multi-test comparison yet.
+- Runtime assumptions:
+  - Redis dependency remains mandatory for orchestrator/worker startup.
+  - TimescaleDB is running in compose but not yet used for persistence.
 
 ## Not Started
 
-- Dashboard app implementation.
-- Kubernetes/Helm/Terraform manifests.
-- Project-specific README and runbook docs.
+- Kubernetes manifests and HPA implementation details.
+- Helm chart implementation details.
+- Terraform cloud provisioning implementation.
+- Production-grade CI/CD workflows.
+- Demo deployment URL and final architecture/demo documentation assets.
 
-## Newly Added Baseline
+## Recommended Next Order
 
-- Docker baseline scaffolded:
-  - `apps/orchestrator/Dockerfile`
-  - `apps/worker/Dockerfile`
-  - `docker-compose.yml`
-  - `.dockerignore`
-  - `infra/prometheus/prometheus.yml`
-- Current compose stack status:
-  - Redis, TimescaleDB, Prometheus, Grafana, Orchestrator, and Worker services are defined in compose.
-  - TimescaleDB host port uses `5433` to avoid host conflicts with local PostgreSQL.
-  - Full stack has been built and started successfully via `docker compose up -d --build`.
-
-## Recommended Next Order (Before Docker Compose)
-
-1. Validate full compose runtime behavior end-to-end (including orchestrator + worker startup and logs).
-2. Add dashboard service to compose once dashboard implementation begins.
-3. Add at least one end-to-end test that includes worker metric publication and orchestrator metric ingestion loop.
+1. Add an end-to-end integration test with real Redis that validates metric ingestion and status progression.
+2. Persist snapshots to TimescaleDB and expose run retrieval endpoints for historical analysis.
+3. Add dashboard support for listing and reloading prior test runs.
+4. Add CI workflow gates for build + tests + smoke integration checks.
 
 ## Current Confidence
 
-- Domain logic confidence: medium.
-- Runtime/deployment confidence: medium-high for local/container baseline; still limited by missing dashboard and deeper end-to-end validation.
+- Domain logic confidence: medium-high.
+- Local runtime confidence: high for compose baseline and interactive dashboard flow.
+- Deployment confidence: medium (infra and CI/CD still incomplete).

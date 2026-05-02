@@ -71,6 +71,25 @@ describe("Orchestrator API Redis flow", () => {
       metrics: [],
     });
 
+    const listResponse = await app.inject({
+      method: "GET",
+      url: "/tests",
+    });
+
+    expect(listResponse.statusCode).toBe(200);
+    const listed = JSON.parse(listResponse.body);
+    expect(Array.isArray(listed.tests)).toBe(true);
+    expect(listed.tests).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          testId: created.testId,
+          status: "started",
+          targetUrl: "https://example.com/load",
+          method: "POST",
+        }),
+      ]),
+    );
+
     await app.close();
   });
 });

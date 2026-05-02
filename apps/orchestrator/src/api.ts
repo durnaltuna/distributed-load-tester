@@ -4,13 +4,16 @@ import type { MetricSnapshot } from "../../../packages/shared/src/metrics";
 const { randomUUID } = require("node:crypto");
 const Fastify = require("fastify");
 const websocketPlugin = require("@fastify/websocket");
+const corsPlugin = require("@fastify/cors");
 const redis = require("redis");
 const AdaptiveController = require("./adaptive");
+const MetricsStore = require("./db");
 
 type TestStatus =
   | "started"
   | "running"
   | "stopped"
+  | "completed"
   | "backing_off"
   | "ramping_up"
   | "threshold_found";
@@ -31,6 +34,7 @@ interface WsSocket {
 class OrchestratorApi {
   private readonly app: any;
   private readonly redisClient: any;
+  private readonly metricsStore: InstanceType<typeof MetricsStore>;
   private readonly tests: Map<string, TestRun> = new Map();
   private readonly subscribers: Map<string, Set<WsSocket>> = new Map();
   private isMetricsLoopRunning: boolean = false;
@@ -43,13 +47,19 @@ class OrchestratorApi {
         port: Number(process.env.REDIS_PORT || "6379"),
       },
     });
+    this.metricsStore = new MetricsStore();
 
     this.registerRoutes();
   }
 
   async start(port: number): Promise<void> {
+    await this.app.register(corsPlugin, {
+      origin: true,
+    });
     await this.app.register(websocketPlugin);
     await this.redisClient.connect();
+    await this.metricsStore.connect();
+    await this.metricsStore.initializeSchema();
 
     this.isMetricsLoopRunning = true;
     this.startMetricsLoop();
@@ -65,6 +75,7 @@ class OrchestratorApi {
     }
 
     await this.redisClient.quit();
+    await this.metricsStore.close();
     await this.app.close();
   }
 
@@ -90,11 +101,20 @@ class OrchestratorApi {
         }
 
         existing.status = event.type;
+
+        void this.metricsStore.updateTestRunStatus(testId, event.type).catch((error: unknown) => {
+          this.app.log.error({ error, testId }, "failed to update test status");
+        });
+
         this.broadcast(testId, { event });
       });
 
       controller.start();
       this.tests.set(testId, testRun);
+
+      void this.metricsStore.insertTestRun(testId, job, "started").catch((error: unknown) => {
+        this.app.log.error({ error, testId }, "failed to persist test run");
+      });
 
       await this.redisClient.xAdd("jobs", "*", {
         testId,
@@ -106,22 +126,75 @@ class OrchestratorApi {
         body: job.body === undefined ? "" : JSON.stringify(job.body),
       });
 
+      setTimeout(() => {
+        const run = this.tests.get(testId);
+        if (run !== undefined && run.status !== "stopped") {
+          run.status = "completed";
+          run.controller.stop();
+          void this.metricsStore.updateTestRunStatus(testId, "completed").catch((error: unknown) => {
+            this.app.log.error({ error, testId }, "failed to mark test completed");
+          });
+          this.broadcast(testId, { testId, status: "completed" });
+        }
+      }, (job.durationSeconds + 10) * 1000);
+
       return reply.send({ testId, status: "started" });
+
+    });
+
+    this.app.get("/tests", async (_request: any, reply: any) => {
+      try {
+        const runs = await this.metricsStore.listTestRuns();
+        return reply.send({ tests: runs });
+      } catch (error) {
+        this.app.log.error({ error }, "failed to list tests from storage");
+
+        const fallbackRuns = Array.from(this.tests.values())
+          .map((run) => ({
+            testId: run.testId,
+            status: run.status,
+            targetUrl: run.job.targetUrl,
+            method: run.job.method,
+            concurrency: run.job.concurrency,
+            durationSeconds: run.job.durationSeconds,
+            startedAt: run.metrics[0]?.timestamp ?? new Date().toISOString(),
+            updatedAt: run.metrics[run.metrics.length - 1]?.timestamp ?? new Date().toISOString(),
+            snapshotCount: run.metrics.length,
+          }))
+          .sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
+
+        return reply.send({ tests: fallbackRuns });
+      }
     });
 
     this.app.get("/tests/:testId", async (request: any, reply: any) => {
       const testId = String(request.params.testId);
       const testRun = this.tests.get(testId);
 
-      if (testRun === undefined) {
-        return reply.code(404).send({ message: "test not found" });
+      if (testRun !== undefined) {
+        return reply.send({
+          testId: testRun.testId,
+          status: testRun.status,
+          metrics: testRun.metrics,
+        });
       }
 
-      return reply.send({
-        testId: testRun.testId,
-        status: testRun.status,
-        metrics: testRun.metrics,
-      });
+      try {
+        const storedRun = await this.metricsStore.getTestRun(testId);
+        if (storedRun === null) {
+          return reply.code(404).send({ message: "test not found" });
+        }
+
+        const metrics = await this.metricsStore.getMetricsForTest(testId);
+        return reply.send({
+          testId,
+          status: storedRun.status,
+          metrics,
+        });
+      } catch (error) {
+        this.app.log.error({ error, testId }, "failed to fetch test from storage");
+        return reply.code(404).send({ message: "test not found" });
+      }
     });
 
     this.app.delete("/tests/:testId", async (request: any, reply: any) => {
@@ -134,6 +207,11 @@ class OrchestratorApi {
 
       testRun.status = "stopped";
       testRun.controller.stop();
+
+      void this.metricsStore.updateTestRunStatus(testId, "stopped").catch((error: unknown) => {
+        this.app.log.error({ error, testId }, "failed to update stopped status");
+      });
+
       this.broadcast(testId, { testId, status: "stopped" });
 
       return reply.send({ testId, status: "stopped" });
@@ -235,6 +313,12 @@ class OrchestratorApi {
             testRun.status = testRun.status === "started" ? "running" : testRun.status;
             testRun.controller.addSnapshot(metric);
             this.broadcast(testId, metric);
+
+            try {
+              await this.metricsStore.insertMetric(testId, metric);
+            } catch (error) {
+              this.app.log.error({ error, testId }, "failed to persist metric");
+            }
           }
         }
       } catch (error) {

@@ -75,9 +75,12 @@ describe('Worker', () => {
   it('should correctly calculate p99 from a list of latencies', async () => {
     let callCount = 0
 
+    // Alternate between fast (10ms) and slow (100ms) so the split is always
+    // exactly 50/50 regardless of total request count. This guarantees that
+    // p50 lands in the fast bucket and p99 lands in the slow bucket.
     global.fetch = vi.fn(async () => {
       callCount++
-      const latency = callCount <= 50 ? 10 : 100
+      const latency = callCount % 2 === 0 ? 10 : 100
 
       await new Promise((resolve) => setTimeout(resolve, latency))
 
