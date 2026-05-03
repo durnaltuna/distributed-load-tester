@@ -12,17 +12,16 @@ Adaptive distributed load testing engine for finding HTTP endpoint breakpoints b
 
 ## Architecture
 
-```text
-Dashboard (React + Recharts)
-  | HTTP + WebSocket
-  v
-Orchestrator (Fastify)
-  | Redis Stream: jobs
-  v
-Workers (Node)
-  | Redis Stream: metrics
-  v
-Orchestrator metrics loop + adaptive controller
+```mermaid
+flowchart TD
+  D[Dashboard\nReact + Recharts] -->|HTTP + WebSocket| O[Orchestrator\nFastify]
+  O -->|XADD jobs stream| R[(Redis)]
+  W[Workers\nNode] -->|XADD metrics stream| R
+  R -->|XREAD metrics stream| O
+  O -->|Adaptive events + snapshots| D
+  O -->|INSERT test_runs + metrics| T[(TimescaleDB)]
+  P[Prometheus] -->|Scrape /metrics| O
+  G[Grafana] -->|Query| P
 ```
 
 Supporting infra in local stack:
@@ -66,6 +65,55 @@ Stop stack:
 ```bash
 docker compose down
 ```
+
+## Demo Walkthrough
+
+Use this short flow when presenting the project:
+
+1. Start stack with `docker compose up -d --build`.
+2. Open dashboard at `http://localhost:4173` and create a 30-second test.
+3. Open Prometheus at `http://localhost:9090` and query:
+  - `load_tester_active_tests`
+  - `sum(rate(load_tester_requests_total[1m]))`
+  - `sum(rate(load_tester_errors_total[1m]))`
+4. Open Grafana at `http://localhost:3001` (admin/admin).
+5. Verify auto-provisioned dashboard exists:
+  - Folder: `Distributed Load Tester`
+  - Dashboard: `Distributed Load Tester Overview`
+
+Suggested screenshot set for CV/repo:
+
+- Dashboard run view while test is active.
+- Prometheus graph showing requests/error-rate queries.
+- Grafana overview dashboard with p99 and active tests panels.
+
+## Screenshots
+
+Add your captures to `docs/screenshots/` with the filenames below so they render automatically on GitHub.
+
+### 1) Dashboard Before Run
+
+![Dashboard Before Run](docs/screenshots/01-dashboard-before.png)
+
+State before starting a test.
+
+### 2) Dashboard Live Run
+
+![Dashboard Live Run](docs/screenshots/02-dashboard-live.png)
+
+Live p50/p95/p99 updates while the test is running.
+
+### 3) Prometheus Query
+
+![Prometheus Query](docs/screenshots/03-prometheus-rps.png)
+
+`sum(rate(load_tester_requests_total[1m]))` during an active run.
+
+### 4) Grafana Overview
+
+![Grafana Overview](docs/screenshots/04-grafana-overview.png)
+
+Auto-provisioned dashboard with RPS, error rate, p99 latency, and active tests.
 
 ## Kubernetes Deployment (Minikube)
 
@@ -152,11 +200,7 @@ curl -X POST http://localhost:3000/tests \
   }'
 
 # Watch live metrics in Grafana/Prometheus
-# Visit http://localhost:3001 → Create dashboard → add panels using:
-#   - load_tester_requests_total
-#   - load_tester_errors_total
-#   - load_tester_p99_latency_ms
-#   - load_tester_active_tests
+# Visit http://localhost:3001 → Distributed Load Tester → Distributed Load Tester Overview
 ```
 
 ### Cleanup
@@ -243,7 +287,6 @@ npm run build
 
 ## Current Gaps
 
-- End-to-end automated test that spans orchestrator -> redis -> worker -> orchestrator loop.
-- TimescaleDB persistence path is not integrated yet.
-- Kubernetes/Helm/Terraform work is still scaffold-level.
-- CI/CD workflows are not finalized.
+- Multi-run comparison UX in dashboard can be improved.
+- Helm chart and Terraform are optional future work if you want cloud-production packaging.
+- Public demo URL is not included by default (local docker/minikube workflows are documented).
