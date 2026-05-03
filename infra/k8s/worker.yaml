@@ -15,8 +15,8 @@ spec:
     spec:
       containers:
         - name: worker
-          image: ghcr.io/replace-me/distributed-load-tester-worker:latest
-          imagePullPolicy: Always
+          image: worker:local
+          imagePullPolicy: Never
           env:
             - name: WORKER_ID
               valueFrom:

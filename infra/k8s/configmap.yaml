@@ -4,11 +4,11 @@ metadata:
   name: load-tester-config
   namespace: load-tester
 data:
-  REDIS_HOST: redis
+  REDIS_HOST: redis.load-tester.svc.cluster.local
   REDIS_PORT: "6379"
-  DB_HOST: timescaledb
+  DB_HOST: timescaledb.load-tester.svc.cluster.local
   DB_PORT: "5432"
   DB_NAME: loadtest
   PORT: "3000"
-  VITE_ORCHESTRATOR_HTTP: http://localhost:3000
-  VITE_ORCHESTRATOR_WS: ws://localhost:3000
+  VITE_ORCHESTRATOR_HTTP: http://orchestrator.load-tester.svc.cluster.local:3000
+  VITE_ORCHESTRATOR_WS: ws://orchestrator.load-tester.svc.cluster.local:3000

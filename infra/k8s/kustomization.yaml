@@ -11,3 +11,5 @@ resources:
   - worker.yaml
   - worker-hpa.yaml
   - dashboard.yaml
+  - prometheus.yaml
+  - grafana.yaml

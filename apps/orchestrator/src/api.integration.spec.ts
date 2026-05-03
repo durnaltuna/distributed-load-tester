@@ -14,6 +14,8 @@ describe("Orchestrator API Redis flow", () => {
       connect: vi.fn(async () => undefined),
       quit: vi.fn(async () => undefined),
       sendCommand: vi.fn(async () => null),
+      set: vi.fn(async () => undefined),
+      del: vi.fn(async () => undefined),
     };
 
     vi.spyOn(redis, "createClient").mockReturnValue(mockClient);
@@ -22,6 +24,8 @@ describe("Orchestrator API Redis flow", () => {
   it("creates a test and publishes the job to Redis stream", async () => {
     const api = new OrchestratorApi() as any;
     const app = api.app;
+
+    await api.prepareRoutes();
 
     const createResponse = await app.inject({
       method: "POST",

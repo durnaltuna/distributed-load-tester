@@ -111,9 +111,39 @@ class RedisConsumer {
             try {
               const parsedJob = this.parseJob(msg.message)
               const worker = new Worker(this.workerId)
-              const metrics = await worker.run(parsedJob.job)
+              let currentConcurrency = parsedJob.job.concurrency
 
-              await this.publishMetrics(parsedJob.testId, metrics)
+              // Poll Redis every 2s for orchestrator-driven concurrency updates
+              let pollingActive = true
+              const pollConcurrency = async (): Promise<void> => {
+                while (pollingActive) {
+                  await new Promise<void>((resolve) => setTimeout(resolve, 2000))
+                  if (!pollingActive) break
+                  try {
+                    const val = await this.client.get(`concurrency:${parsedJob.testId}`)
+                    if (val !== null) {
+                      const parsed = parseInt(val, 10)
+                      if (!isNaN(parsed) && parsed > 0) {
+                        currentConcurrency = parsed
+                      }
+                    }
+                  } catch {
+                    // ignore transient polling errors
+                  }
+                }
+              }
+
+              void pollConcurrency()
+
+              await worker.run(
+                parsedJob.job,
+                async (snapshot: MetricSnapshot) => {
+                  await this.publishMetrics(parsedJob.testId, snapshot)
+                },
+                () => currentConcurrency,
+              )
+
+              pollingActive = false
               await this.client.xAck('jobs', 'workers', msg.id)
             } catch (error) {
               console.error('Error processing job:', error)

@@ -1,6 +1,8 @@
 import type { MetricSnapshot } from "../../../packages/shared/src/metrics";
 import type { Job } from "../../../packages/shared/src/types";
 
+const SNAPSHOT_INTERVAL_MS = 5000;
+
 class Worker {
   private readonly workerId: string;
 
@@ -8,18 +10,37 @@ class Worker {
     this.workerId = workerId;
   }
 
-  async run(job: Job): Promise<MetricSnapshot> {
+  async run(
+    job: Job,
+    onSnapshot?: (snapshot: MetricSnapshot) => Promise<void>,
+    getConcurrency?: () => number,
+  ): Promise<MetricSnapshot> {
     const latencies: number[] = [];
     let succeededRequests = 0;
     let failedRequests = 0;
 
     const durationMs = Math.max(0, job.durationSeconds * 1000);
-    const concurrency = Math.max(0, Math.floor(job.concurrency));
+    const initialConcurrency = Math.max(1, Math.floor(job.concurrency));
     const endTime = Date.now() + durationMs;
+    let lastSnapshotAt = Date.now();
+
+    const buildSnapshot = (): MetricSnapshot => {
+      const sortedLatencies = [...latencies].sort((a, b) => a - b);
+      return {
+        timestamp: new Date().toISOString(),
+        workerId: this.workerId,
+        requestsCompleted: succeededRequests + failedRequests,
+        errorsCount: failedRequests,
+        p50LatencyMs: this.calculatePercentile(sortedLatencies, 0.5),
+        p95LatencyMs: this.calculatePercentile(sortedLatencies, 0.95),
+        p99LatencyMs: this.calculatePercentile(sortedLatencies, 0.99),
+      };
+    };
 
     try {
       while (Date.now() < endTime) {
-        const batch = Array.from({ length: concurrency }, () =>
+        const batchSize = Math.max(1, Math.floor(getConcurrency?.() ?? initialConcurrency));
+        const batch = Array.from({ length: batchSize }, () =>
           this.executeRequest(job),
         );
 
@@ -34,23 +55,24 @@ class Worker {
             failedRequests += 1;
           }
         }
+
+        const now = Date.now();
+        if (onSnapshot !== undefined && now - lastSnapshotAt >= SNAPSHOT_INTERVAL_MS) {
+          lastSnapshotAt = now;
+          await onSnapshot(buildSnapshot());
+        }
       }
     } catch {
       // Ensure run() never throws uncaught errors.
     }
 
-    const sortedLatencies = [...latencies].sort((a, b) => a - b);
-    const requestsCompleted = succeededRequests + failedRequests;
+    const finalSnapshot = buildSnapshot();
 
-    return {
-      timestamp: new Date().toISOString(),
-      workerId: this.workerId,
-      requestsCompleted,
-      errorsCount: failedRequests,
-      p50LatencyMs: this.calculatePercentile(sortedLatencies, 0.5),
-      p95LatencyMs: this.calculatePercentile(sortedLatencies, 0.95),
-      p99LatencyMs: this.calculatePercentile(sortedLatencies, 0.99),
-    };
+    if (onSnapshot !== undefined) {
+      await onSnapshot(finalSnapshot);
+    }
+
+    return finalSnapshot;
   }
 
   private async executeRequest(job: Job): Promise<{ ok: boolean; latencyMs: number }> {

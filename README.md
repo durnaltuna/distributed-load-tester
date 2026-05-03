@@ -67,6 +67,111 @@ Stop stack:
 docker compose down
 ```
 
+## Kubernetes Deployment (Minikube)
+
+For a complete orchestrated deployment (ideal for demonstrations):
+
+### Prerequisites
+
+- [Minikube](https://minikube.sigs.k8s.io/) installed
+- `kubectl` CLI
+- Docker (for building images)
+
+### Setup & Deployment
+
+1. **Start minikube cluster:**
+
+```bash
+minikube start --cpus=4 --memory=4096
+```
+
+2. **Configure shell to use minikube's Docker daemon** (so images build inside the cluster):
+
+```bash
+eval $(minikube docker-env)
+```
+
+3. **Build Docker images** (inside minikube):
+
+```bash
+docker build -t orchestrator:local ./apps/orchestrator
+docker build -t worker:local ./apps/worker
+docker build -t dashboard:local ./apps/dashboard
+```
+
+4. **Deploy the full stack** using Kustomize:
+
+```bash
+kubectl apply -k infra/k8s/
+```
+
+This deploys:
+- `load-tester` namespace
+- Redis (Deployment)
+- TimescaleDB (StatefulSet with persistent volume)
+- Orchestrator (Deployment with readiness/liveness probes)
+- Workers (Deployment with horizontal pod autoscaler, 1-12 replicas based on CPU)
+- Dashboard (Deployment)
+- Prometheus (metrics collection)
+- Grafana (dashboarding)
+
+5. **Port forward to access services** (in separate terminals):
+
+```bash
+# Dashboard (React UI)
+kubectl port-forward -n load-tester svc/dashboard 4173:4173
+
+# Orchestrator API
+kubectl port-forward -n load-tester svc/orchestrator 3000:3000
+
+# Grafana
+kubectl port-forward -n load-tester svc/grafana 3001:3000
+
+# Prometheus
+kubectl port-forward -n load-tester svc/prometheus 9090:9090
+```
+
+6. **Access services:**
+
+- Dashboard: `http://localhost:4173`
+- Orchestrator API: `http://localhost:3000`
+- Grafana: `http://localhost:3001` (admin/admin)
+- Prometheus: `http://localhost:9090`
+
+### Example Test Run (in Kubernetes)
+
+```bash
+# Create a test
+curl -X POST http://localhost:3000/tests \
+  -H "Content-Type: application/json" \
+  -d '{
+    "targetUrl": "https://httpbin.org/delay/1",
+    "method": "GET",
+    "concurrency": 5,
+    "durationSeconds": 30
+  }'
+
+# Watch live metrics in Grafana/Prometheus
+# Visit http://localhost:3001 → Create dashboard → add panels using:
+#   - load_tester_requests_total
+#   - load_tester_errors_total
+#   - load_tester_p99_latency_ms
+#   - load_tester_active_tests
+```
+
+### Cleanup
+
+```bash
+# Delete all resources
+kubectl delete -k infra/k8s/
+
+# Stop minikube cluster
+minikube stop
+
+# Delete minikube cluster (optional)
+minikube delete
+```
+
 ## Local Development (without Docker)
 
 Install dependencies:

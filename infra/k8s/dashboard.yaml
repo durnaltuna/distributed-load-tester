@@ -15,8 +15,8 @@ spec:
     spec:
       containers:
         - name: dashboard
-          image: ghcr.io/replace-me/distributed-load-tester-dashboard:latest
-          imagePullPolicy: Always
+          image: dashboard:local
+          imagePullPolicy: Never
           ports:
             - containerPort: 4173
           envFrom:

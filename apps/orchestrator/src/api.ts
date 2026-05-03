@@ -8,6 +8,36 @@ const corsPlugin = require("@fastify/cors");
 const redis = require("redis");
 const AdaptiveController = require("./adaptive");
 const MetricsStore = require("./db");
+const client = require("prom-client");
+
+const promRegistry = new client.Registry();
+
+const requestsTotal = new client.Counter({
+  name: "load_tester_requests_total",
+  help: "Total HTTP requests completed across all tests",
+  labelNames: ["testId"],
+  registers: [promRegistry],
+});
+
+const errorsTotal = new client.Counter({
+  name: "load_tester_errors_total",
+  help: "Total request errors across all tests",
+  labelNames: ["testId"],
+  registers: [promRegistry],
+});
+
+const p99LatencyGauge = new client.Gauge({
+  name: "load_tester_p99_latency_ms",
+  help: "Most recent p99 latency in milliseconds per test",
+  labelNames: ["testId"],
+  registers: [promRegistry],
+});
+
+const activeTestsGauge = new client.Gauge({
+  name: "load_tester_active_tests",
+  help: "Number of currently active load tests",
+  registers: [promRegistry],
+});
 
 type TestStatus =
   | "started"
@@ -29,6 +59,7 @@ interface TestRun {
 interface WsSocket {
   send: (data: string) => void;
   readyState: number;
+  on: (event: string, listener: (...args: any[]) => void) => void;
 }
 
 class OrchestratorApi {
@@ -37,7 +68,9 @@ class OrchestratorApi {
   private readonly metricsStore: InstanceType<typeof MetricsStore>;
   private readonly tests: Map<string, TestRun> = new Map();
   private readonly subscribers: Map<string, Set<WsSocket>> = new Map();
+  private readonly completionTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private isMetricsLoopRunning: boolean = false;
+  private metricsLoopDone: Promise<void> = Promise.resolve();
 
   constructor() {
     this.app = Fastify({ logger: true });
@@ -48,27 +81,39 @@ class OrchestratorApi {
       },
     });
     this.metricsStore = new MetricsStore();
-
-    this.registerRoutes();
   }
 
   async start(port: number): Promise<void> {
-    await this.app.register(corsPlugin, {
-      origin: true,
-    });
-    await this.app.register(websocketPlugin);
+    await this.prepareRoutes();
     await this.redisClient.connect();
-    await this.metricsStore.connect();
-    await this.metricsStore.initializeSchema();
+
+    try {
+      await this.metricsStore.connect();
+      await this.metricsStore.initializeSchema();
+    } catch (error) {
+      this.app.log.warn({ error }, "TimescaleDB unavailable — running without persistence");
+    }
 
     this.isMetricsLoopRunning = true;
-    this.startMetricsLoop();
+    this.metricsLoopDone = this.startMetricsLoop();
 
     await this.app.listen({ port, host: "0.0.0.0" });
   }
 
+  async prepareRoutes(): Promise<void> {
+    await this.app.register(corsPlugin, { origin: true });
+    await this.app.register(websocketPlugin);
+    this.registerRoutes();
+  }
+
   async stop(): Promise<void> {
     this.isMetricsLoopRunning = false;
+    await this.metricsLoopDone;
+
+    for (const timer of this.completionTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.completionTimers.clear();
 
     for (const run of this.tests.values()) {
       run.controller.stop();
@@ -80,6 +125,11 @@ class OrchestratorApi {
   }
 
   private registerRoutes(): void {
+    this.app.get("/metrics", async (_request: any, reply: any) => {
+      reply.header("Content-Type", promRegistry.contentType);
+      return reply.send(await promRegistry.metrics());
+    });
+
     this.app.post("/tests", async (request: any, reply: any) => {
       const body = request.body as Partial<Job>;
       const job = this.normalizeJob(body);
@@ -106,11 +156,17 @@ class OrchestratorApi {
           this.app.log.error({ error, testId }, "failed to update test status");
         });
 
+        // Push updated concurrency to Redis so the worker adjusts mid-run
+        void this.redisClient.set(`concurrency:${testId}`, String(event.concurrency)).catch((error: unknown) => {
+          this.app.log.error({ error, testId }, "failed to publish concurrency update");
+        });
+
         this.broadcast(testId, { event });
       });
 
       controller.start();
       this.tests.set(testId, testRun);
+      activeTestsGauge.set(this.tests.size);
 
       void this.metricsStore.insertTestRun(testId, job, "started").catch((error: unknown) => {
         this.app.log.error({ error, testId }, "failed to persist test run");
@@ -126,17 +182,21 @@ class OrchestratorApi {
         body: job.body === undefined ? "" : JSON.stringify(job.body),
       });
 
-      setTimeout(() => {
+      const timer = setTimeout(() => {
+        this.completionTimers.delete(testId);
         const run = this.tests.get(testId);
         if (run !== undefined && run.status !== "stopped") {
           run.status = "completed";
           run.controller.stop();
+          activeTestsGauge.set(this.tests.size);
           void this.metricsStore.updateTestRunStatus(testId, "completed").catch((error: unknown) => {
             this.app.log.error({ error, testId }, "failed to mark test completed");
           });
+          void this.redisClient.del(`concurrency:${testId}`).catch(() => { /* ignore */ });
           this.broadcast(testId, { testId, status: "completed" });
         }
       }, (job.durationSeconds + 10) * 1000);
+      this.completionTimers.set(testId, timer);
 
       return reply.send({ testId, status: "started" });
 
@@ -207,12 +267,14 @@ class OrchestratorApi {
 
       testRun.status = "stopped";
       testRun.controller.stop();
+      activeTestsGauge.set(this.tests.size);
 
       void this.metricsStore.updateTestRunStatus(testId, "stopped").catch((error: unknown) => {
         this.app.log.error({ error, testId }, "failed to update stopped status");
       });
 
       this.broadcast(testId, { testId, status: "stopped" });
+      void this.redisClient.del(`concurrency:${testId}`).catch(() => { /* ignore */ });
 
       return reply.send({ testId, status: "stopped" });
     });
@@ -220,9 +282,9 @@ class OrchestratorApi {
     this.app.get(
       "/tests/:testId/live",
       { websocket: true },
-      (connection: any, request: any) => {
+      (socket: any, request: any) => {
         const testId = String(request.params.testId);
-        const socket = connection.socket as WsSocket;
+        const ws = socket as WsSocket;
 
         if (!this.subscribers.has(testId)) {
           this.subscribers.set(testId, new Set());
@@ -230,13 +292,13 @@ class OrchestratorApi {
 
         const set = this.subscribers.get(testId);
         if (set !== undefined) {
-          set.add(socket);
+          set.add(ws);
         }
 
-        connection.socket.on("close", () => {
+        ws.on("close", () => {
           const subscribers = this.subscribers.get(testId);
           if (subscribers !== undefined) {
-            subscribers.delete(socket);
+            subscribers.delete(ws);
             if (subscribers.size === 0) {
               this.subscribers.delete(testId);
             }
@@ -313,6 +375,10 @@ class OrchestratorApi {
             testRun.status = testRun.status === "started" ? "running" : testRun.status;
             testRun.controller.addSnapshot(metric);
             this.broadcast(testId, metric);
+
+            requestsTotal.inc({ testId }, metric.requestsCompleted);
+            errorsTotal.inc({ testId }, metric.errorsCount);
+            p99LatencyGauge.set({ testId }, metric.p99LatencyMs);
 
             try {
               await this.metricsStore.insertMetric(testId, metric);
