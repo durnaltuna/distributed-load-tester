@@ -81,12 +81,6 @@ Use this short flow when presenting the project:
   - Folder: `Distributed Load Tester`
   - Dashboard: `Distributed Load Tester Overview`
 
-Suggested screenshot set for CV/repo:
-
-- Dashboard run view while test is active.
-- Prometheus graph showing requests/error-rate queries.
-- Grafana overview dashboard with p99 and active tests panels.
-
 ## Screenshots
 
 Add your captures to `docs/screenshots/` with the filenames below so they render automatically on GitHub.
