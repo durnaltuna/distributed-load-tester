@@ -83,8 +83,6 @@ Use this short flow when presenting the project:
 
 ## Screenshots
 
-Add your captures to `docs/screenshots/` with the filenames below so they render automatically on GitHub.
-
 ### 1) Dashboard Before Run
 
 ![Dashboard Before Run](docs/screenshots/01-dashboard-before.png)
