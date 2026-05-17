@@ -109,8 +109,6 @@ Auto-provisioned dashboard with RPS, error rate, p99 latency, and active tests.
 
 ## Kubernetes Deployment (Minikube)
 
-For a complete orchestrated deployment (ideal for demonstrations):
-
 ### Prerequisites
 
 - [Minikube](https://minikube.sigs.k8s.io/) installed
